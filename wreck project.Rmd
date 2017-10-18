@@ -1,0 +1,428 @@
+---
+title: "Wreck project"
+author: "Philéas"
+date: "Saturday, February 07, 2015"
+output: html_document
+---
+L'objet de ce document est de chiffrer pistes d'amélioration du processus de gestion des épaves et réparations.
+
+```{r, echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE,  include=FALSE}
+setwd("/Users/p-condemine/Documents/Claims/Wreck VGE/Fichiers 2015-01-10/")
+library(data.table)
+library(bit64)
+library(ggplot2)
+library(gbm)
+rep=fread("tableBT.csv")
+vei=fread("tableBTVEI.csv")
+```
+
+
+Quelques chiffres pour indiquer les volumes : 
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+c(meanVRADEvei=mean(vei$VRADE),nbvei=nrow(vei),VRADEmVRESID=mean(vei$VRADE-vei$VRESID),meanREP=mean(rep$mtfactu),nbrep=nrow(rep),totveiVRADEmRESID=sum(vei$VRADE-vei$VRESID),totveiVRADEmRESCES=sum(vei$VRADE-vei$VALRES_CESQ),totrep=sum(rep$mtfactu))
+```
+
+Répartition des VRADE des VEI :
+
+- 75% valent moins de 5000€
+
+- ~50% valent moins de 2500€
+
+
+La prise en compte de la valeur résiduelle a un effet faible mais sensible
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot()+geom_line(data=data.frame(x=1:99/100,y=quantile(vei$VRADE,1:99/100)),aes(x=x,y=y,color="VRADE en VEI"))+geom_line(data=data.frame(x=1:99/100,y=quantile(vei$VRADE-vei$VALRES_CESQ,1:99/100)),aes(x=x,y=y,color="VRADE-RESID"))
+
+```
+ 
+ 
+Répartition des valeurs résiduelles des VEI
+
+- 30% de valeurs nulles
+
+- le reste est presque toujours en dessous de 3000€ (on ne regarde pas le dernier centile)
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot(data.frame(x=1:99/100,y=quantile(vei$VRESID,1:99/100)),aes(x=x,y=y,color="VRESID"))+geom_line()
+ggplot(data.frame(x=1:99/100,y=quantile(vei$VALRES_CESQ,1:99/100)),aes(x=x,y=y,color="VALRES_CESQ"))+geom_line()
+```
+
+Si on regarde de plus près on se rend compte que la valeur résiduelle n'est pas forfaitaire (0% ou 25%) dans 13833 cas.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot(data.frame(x=1:99/100,y=quantile(vei$VALRES_CESQ/vei$VRADE,1:99/100,na.rm=T)),aes(x=x,y=y,color="VRESID/VRADE"))+geom_line()
+
+temp=subset(vei,(!(vei$VALRES_CESQ==0))&(!(vei$VALRES_CESQ/vei$VRADE==0.25)))
+ggplot(data=data.frame(x=1:99,y=quantile(temp$VALRES_CESQ/temp$VRADE,1:99/100)),aes(x=x,y=y,color="VRESID/VRADE hors 0% et 25%"))+geom_line()
+```
+
+- On essaie de modéliser cette valeur résiduelle (hors 0 et 25% VRADE) en tant que part de la VRADE. Aucun pouvoir explicatif avec les variables à disposition. On utilise : prix à neuf, kilométrage, âge, valeur des pièces, énergie, genre, classe, modèle, VRADE.
+
+- Si on essaie d'expliquer directement la valeur résiduelle on obtient des résultats médiocres : écart type de 500€ pour des valeurs résiduelles en moyenne à 600€. 
+
+- Si on s'intéresse aux valeurs résiduelles de plus de 500€ (on en compte 6500), on obtient une erreur de 1300€ pour une valeur résiduelle moyenne de 2000€.
+
+Les variables les plus influentes sont 1] VRADE (2/3), 2] modèle (1/3 et overfitting important)
+
+L'ajout de variables (précisions sur les chocs ?), mais surtout d'observations, permettra de faire mieux.
+
+On pourrait aussi tirer profit de la valeur MTHTRER ?
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+load("/Users/p-condemine/Documents/Claims/Wreck VGE/Fichiers 2015-01-10/modelres.RData")
+param=c(ntree=250,depth=20,shrinkage=0.005,train.fraction=0.8)
+modelres=gbm(VALRES_CESQ~.-IDMIS-CODEXP-SINISTRE-NMCNT-DTCESSION-DTCREDTE-DTCIR001,
+           data=dbres,distribution = "gaussian",n.trees = param[1],interaction.depth = param[2],
+           shrinkage = param[3],train.fraction = param[4],verbose = T)
+summary(modelres)
+```
+
+Si on s'intéresse à la quantité VRESID / VRADE il reste très peu de potentiel d'explication, on suspecte beaucoup d'overfitting sur les modèles de véhicules avec un influence de 81%. En effet on a un nombre réduit d'observations et un nombre élevé de modalités de NOM_COM (paradoxe de Freedman ?).
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+param=c(ntree=80,depth=20,shrinkage=0.005,train.fraction=0.8)
+modelres=gbm(VALRES_CESQ/VRADE~.-IDMIS-CODEXP-SINISTRE-NMCNT-DTCESSION-DTCREDTE-DTCIR001,
+           data=dbres,distribution = "gaussian",n.trees = param[1],interaction.depth = param[2],
+           shrinkage = param[3],train.fraction = param[4],verbose = T)
+summary(modelres)
+```
+
+
+
+Si on retire la variable de modèle du véhicule, l'attention se focalise sur le prix à neuf et le kilométrage du véhicule.
+
+Dommage qu'on ne dispose pas de plus d'informations sur le choc pour être sûr que cette information n'impacte vraiment pas.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+param=c(ntree=80,depth=5,shrinkage=0.005,train.fraction=0.8)
+modelres=gbm(VALRES_CESQ/VRADE~.-IDMIS-CODEXP-SINISTRE-NMCNT-DTCESSION-DTCREDTE-DTCIR001-NOM_COM,
+           data=dbres,distribution = "gaussian",n.trees = param[1],interaction.depth = param[2],
+           shrinkage = param[3],train.fraction = param[4],verbose = T)
+summary(modelres)
+```
+
+
+
+Répartition des montants payés finalement pour les réparations.
+
+- 80% des réparations coutent moins de 2000€ en facture finale
+
+- 96% des réparations coutent moins de 4000€ en facture finale
+
+- 99% des réparations coutent moins de 6000€ en facture finale
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot(data.frame(x=1:99/100,y=quantile(rep$mtfactu,1:99/100)),aes(x=x,y=y,color="REPARATION"))+geom_line()
+```
+
+Nous appellerons "additif" l'écart entre première estimation et FACTURE FINALE
+
+Nota : si on souhaite distinguer le vrai concept d'additif de la facture finale il faudrait peut être tenir compte d'autres paramètres : combien coûte la "reprise" du dossier par l'expert pour faire valider un additif ? Même question pour la facture finale à valider. De plus, quel crédit souhaite-t-on associer à une déclaration d'additif plutôt qu'un déclaration de coûts supplémentaires sur la facture finale ?
+
+Répartition des additifs : modification du coût des réparations entre première évaluation et montant final
+
+- 8% des réparations coûtent moins cher qu'en première estimation (réduction de quelques %)
+
+- 52% des réparations coûtent plus cher qu'en première estimation
+
+- 33% des réparations coûtent 5% plus cher qu'en première estimation
+
+- 20% des réparations coûtent 15% plus cher qu'en première estimation
+
+- 12% des réparations coûtent 30% plus cher qu'en première estimation
+
+- 7% des réparations coûtent 50% plus cher qu'en première estimation
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot(data.frame(x=1:99/100,y=quantile(rep$mtfactu/rep$MTHTRER,1:99/100)),aes(x=x,y=y,color="AUGMENTATION ADDITIF"))+geom_line()
+```
+
+C'est une erreur structurelle parce qu'elle est due aux conditions de réalisation de la première estimation, mais dans quels cas ces augmentations sont-elles problématiques ?
+
+Pour le savoir il faudrait une référence pour le choix d'une alternative préférence, ici VEI plutot que réparation, ie payer 100% VRADE plutôt que le montant des réparations... mais que vaut la VRADE ?
+
+Nous verrons plus loin qu'on ne dispose d'aucun moyen d'approcher avec fiabilité la VRADE. 
+
+Nous proposons cependant une remarque sur les classes d'additifs :
+
+Pour des centiles d'additif, valeur à neuf moyenne et coût des réparations rapporté à la valeur à neuf (non actualisée).
+
+On observe une forte corrélation ! Ce sont les réparations les plus coûteuses à priori (pour des véhicules plus chers) qui finissent avec une facture plus élevée que prévu !
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+
+
+rep$quantAdd <- cut (rep$mtfactu/rep$MTHTRER, 
+                     breaks = quantile (rep$mtfactu/rep$MTHTRER, c(1,2,10:19)/20), 
+                     include.lowest = TRUE)
+temp=aggregate (list(rep$MTHTRER,rep$PRIXORI), list (RatioRepPrix = rep$quantAdd), FUN = mean)
+
+setnames(temp,colnames(temp)[2:3],c("x1","x2"))
+
+temp=rbind(temp,temp[2,],temp[2,],temp[2,],temp[2,],temp[2,],temp[2,],temp[2,])
+
+temp$x1=temp$x1/mean(temp$x1)
+temp$x2=temp$x2/mean(temp$x2)
+
+
+
+i=regexpr(",",temp$RatioRepPrix)
+temp$q=as.numeric(sapply(1:length(i),FUN=function(x){substr(as.character(temp$RatioRepPrix[x]),start=2,stop=i[x]-1)}))
+
+temp=temp[order(temp$q),]
+temp$num=1:nrow(temp)
+
+ggplot(data=temp)+geom_line(aes(x=num,y=q,color="quantiles of additive"))+geom_line(aes(x=num,y=x1,color="1st assessment of repairing costs"),stat = "identity")+geom_line(aes(x=num,y=x2,color="pricenew"),stat = "identity")+labs(title="mean value of the 1st assessment of repairing cost\nfor quantiles of additive")
+
+#Forte corrélation ! Donc c'est d'autant pire parce que c'est les plus cheres qui finissent encore plus cheres !
+```
+
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+
+rep$tablekm=as.factor(rep$tablekm)
+rep$table=as.factor(rep$table)
+rep$MARQUE=as.factor(rep$MARQUE)
+rep$NOM_COM=as.factor(rep$NOM_COM)
+rep$CARROSS=as.factor(rep$CARROSS)
+rep$GENRE=as.factor(rep$GENRE)
+rep$ENERGIE=as.factor(rep$ENERGIE)
+rep$addlevel=(rep$mtfactu/rep$MTHTRER)
+rep$add=(rep$mtfactu/rep$MTHTRER>1)*1
+
+rep=sample(rep)
+ntrain=floor(0.6*nrow(rep))
+
+rep[,c("nmarque"):=.N,by=MARQUE]
+rep$marque2=ifelse(rep$nmarque>1000,rep$MARQUE,"NA")
+rep$marque2=as.factor(rep$marque2)
+rep[,c("ncarross"):=.N,by=CARROSS]
+rep$carross2=ifelse(rep$ncarross>1000,rep$CARROSS,"NA")
+rep$carross2=as.factor(rep$carross2)
+rep[,c("nmodel"):=.N,by=NOM_COM]
+rep$model2=ifelse(rep$nmodel>1000,rep$NOM_COM,"NA")
+rep$model2=as.factor(rep$model2)
+train=rep[1:ntrain,]
+test=rep[(ntrain+1):nrow(rep),]
+param=c(ntree=50,depth=5,shrinkage=0.05,train.fraction=0.8)
+modeladdf=gbm(add~mois+tablekm+table+marque2+model2+carross2+ENERGIE+PRIXACT+GENRE,
+           data=train,distribution = "bernoulli",n.trees = param[1],interaction.depth = param[2],
+           shrinkage = param[3],train.fraction = param[4],verbose = T)
+summary(modeladdf)
+plot(modeladdf,i.var=1,type="response")
+plot(modeladdf,i.var=8,type="response")
+plot(modeladdf,i.var=5,type="response")
+
+
+library(verification)
+pred=predict(modeladdf,newdata=test,type="response")
+plot(quantile(pred,1:100/100))
+roc.plot(x=test$add,pred=pred,CI=FALSE)
+
+
+
+param=c(ntree=50,depth=5,shrinkage=0.05,train.fraction=0.8)
+modeladdc=gbm(addlevel~mois+tablekm+table+marque2+model2+carross2+ENERGIE+PRIXACT+GENRE,
+           data=subset(train,train$addlevel>1&train$addlevel<3),distribution = "laplace",n.trees = param[1],interaction.depth = param[2],
+           shrinkage = param[3],train.fraction = param[4],verbose = T)
+summary(modeladdc)
+#I need more data ! zones de choc ? VRADE ?
+
+
+```
+
+La modélisation (Gradient Boosting avec des arbres C4.5) de la VRADE sur 53000 VEI est très mauvaise. On est sur un écart type de 2295€.
+
+On supprime les éléments trop mal modélisés (erreur de plus de 5000€), il reste 51309 observations, on refait tourner. On passe à un écart type de 1483€. 
+
+C'est mieux mais ça reste très mauvais relativement à notre objectif : on souhaiterait une erreur de l'ordre de quelques centaines d'euros au plus.
+
+Pour mémoire, si on essaie de modéliser le ratio VRADE/PRIX NEUF, on arrive finalement à une erreur sur VRADE de 1614€ avec la même structure d'erreur.
+
+Nous allons montrer que nous ne parvenons pas à obtenir une bonne approximation de la VRADE. 
+
+Au risque de "sur-apprendre", on réplique la prévision sur l'échantillon d'apprentissage ce qui devrait donner des résultats plus optimistes que ceux qu'on peut obtenir en réalité.
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+setwd("/Users/p-condemine/Documents/Claims/Wreck VGE/Fichiers 2015-01-10/")
+
+pred=fread("predVRADE2.csv")
+BT=fread("BT-MISVEI.csv")
+temp=merge(pred,BT,by="IDMIS")
+temp=subset(temp,!is.na(temp$BT))
+
+err=pred$VRADE-pred$pred
+hist(err[abs(err)<5000],breaks=100,xlab = "erreur absolue VRADE-prédiction",main = "Histogramme des erreurs inférieures à 5000€\n forte skewness\n queue droite épaisse")
+
+ggplot()+geom_point(data=pred,aes(x=VRADE,y=pred))+geom_line(data=data.frame(x=c(0,50000),y=c(0,50000)),aes(x=x,y=y,color="objectif"))+labs(title="position des prédictions vs réalisations")
+```
+
+A titre d'exemple on peut répliquer la même analyse pour le Bilan technique, on se rend compte que la structure d'erreur et bien plus dispersée, des queues bien plus épaisses, un écart type à 7400€ !
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+
+
+
+err=temp$VRADE-temp$BT
+sd(err)
+hist(err[abs(err)<5000],breaks=100,xlab = "erreur absolue VRADE-prédiction",main = "Histogramme des erreurs inférieures à 5000€\n forte skewness\n queue droite épaisse")
+
+ggplot()+geom_point(data=temp,aes(x=VRADE,y=BT))+geom_line(data=data.frame(x=c(0,50000),y=c(0,50000)),aes(x=x,y=y,color="objectif"))+labs(title="position des BT vs réalisations")
+```
+
+
+Il faut retenir que la VRADE résulte d'une négociation avec le client sur la base de la valeur argus, valeur à neuf, valeur de marché actuelle et surtout une négociation en fonction des spécificités : réparations récentes, intérêt spécifique du véhicule...
+
+On propose ci-dessous d'autres visualisation des erreurs des modèles d'approximation de la VRADE, on peut ainsi comparer l'efficacité des approches.
+
+On a une confiance de +/-10% sur la VRADE prédite dans à peine 20% des cas, +/-50% sur la VRADE prédite dans 65% des cas. C'est clairement insuffisant pour mesurer des impacts et des manques à gagner.
+
+C'est certes un peu mieux que l'approximation par le prix d'origine ou pire une valeur unique de VRADE moyenne, mais ça reste insuffisant.
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+ggplot()+geom_line(data=data.frame(x=1:80/100,y=quantile(exp(abs(log(pred$VRADE/pred$pred))),1:80/100)),aes(x=x,y=y,color="Ratio VRADE réelle / VRADE modélisée"))+geom_line(data=data.frame(x=c(0,0.8),y=c(1.5,1.5)),aes(x=x,y=y,color="150%"))+geom_line(data=data.frame(x=c(0,0.8),y=c(1.1,1.1)),aes(x=x,y=y,color="110%"))+geom_line(data=data.frame(x=c(0,0.8),y=c(1,1)),aes(x=x,y=y,color="100%"))+
+geom_line(data=data.frame(x=1:80/100,y=quantile(exp(abs(log(pred$VRADE/mean(pred$VRADE)))),1:80/100)),aes(x=x,y=y,color="Ratio VRADE réelle / VRADE moyenne"))+
+geom_line(data=data.frame(x=1:80/100,y=quantile(exp(abs(log(pred$VRADE*mean(pred$prix)/(pred$prix*mean(pred$VRADE))))),1:80/100)),aes(x=x,y=y,color="Ratio VRADE réelle / Prix d'origine"))+
+  geom_line(data=data.frame(x=1:80/100,y=quantile(exp(abs(log(temp$VRADE/temp$BT))),1:80/100)),aes(x=x,y=y,color="Ratio VRADE réelle / Bilan technique"))+labs(title="Qualité d'approximation de la VRADE par les BT,\n modélisation, Prix d'origine et VRADE moyenne\n 80 premiers centiles")
+```
+
+
+
+Quelles régularités dans les écarts entre VRADE et montant proposé (BT, modélisation...)
+
+On essaie de savoir si pour certaines classes on parvient à avoir "souvent" un écart inférieur à 500€. Pour cela il suffit d'apprendre à discerner les écarts avec des modèles de règles (arbres de décision).
+
+On construit la variable cible : 1 si l'écart est inférieur à 500€, 0 sinon.
+
+On définit ensuite un modèle d'apprentissage sur ce {0;1} avec toutes les variables disponibles.
+
+Pour le bilan technique s'attend à ce que les principaux facteurs soient le modèle, l'écart au kilométrage de référence et l'âge du véhicule.
+
+Ceci prouverait que les facteurs utilisés pour calculer le bilan technique sont aussi ceux qui justifient les écarts à la VRADE.
+
+Peut être que ces mêmes quantités sont exploitées (très) différemment dans le calcul de la VRADE.
+
+Cette intuition est validée par la pratique par le diagramme des influences relatives. Dans l'ordre, les 4 variables principalement retenues sont le modèle de véhicule, l'écart à la référence kilométrique, le sens de cet écart (plus ou moins value kilométrique) et l'âge du véhicule.
+
+Ceci prouve bien que le bilan technique n'est pas adéquat, ie les coefficients ne sont pas bien étalonnés.
+
+Le principal chiffre à retenir est qu'un écart inférieur à 500€ entre BT et VRADE représente seulement 10% des cas.
+
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+load("/Users/p-condemine/Documents/Claims/Wreck VGE/Fichiers 2015-01-10/db2.RData")
+seuil=500 #Autant compter en euros pour mieux comprendre combien on s'écarte
+dbBT=subset(db2,!is.na(db2$BT))
+dbBT$target=ifelse(abs(dbBT$VRADE-dbBT$BT)>seuil,0,1)
+dbBT$NOM_COM=as.factor(dbBT$NOM_COM)
+dbBT$ratiokm=abs(dbBT$km/dbBT$refkm-1)
+dbBT$diffkm=abs(dbBT$km-dbBT$refkm)
+summary(dbBT$target)
+param=c(ntree=150,depth=10,shrinkage=0.01,train.fraction=0.8)
+modelb=gbm(target~mois+diffkm+ratiokm+NOM_COM+PUIS_REE+PRIXACT+iiactu+coeff+pmvkm+km+VIT_MAXI+CYLINDRE+ENERGIE+GENRE+EMISSION_CO2+BOIT_VIT+FREIN+CTRL_DYN_STAB+SERILIM+NBRE_PTE+DIR_ASS+VIT_MAXI+ctte+CARROSS+TRANS+COUPLE_MOT_MAX+CYLINDRE+table,data=dbBT,distribution = "bernoulli",n.trees = param[1],interaction.depth = param[2], shrinkage = param[3],train.fraction = param[4],n.minobsinnode = 100,verbose = T)
+summary(modelb,cBars=4)
+predBT=predict(object=modelb,newdata = dbBT,type = "response")
+```
+
+Ci-dessous les effets ceteris paribus des variables les plus influentes sur la régularité d'un écart <500€
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+plot(modelb, i.var = 1,type="response",xlab = "âge du véhicule en mois")
+# plot(modelb, i.var = 2,type="response",xlab = "écart absolu au km de référence",)
+plot(modelb, i.var = 3,type="response",xlab="écart relatif kilométrage sur kilométrage de référence")
+plot(modelb, i.var = 4,type="response",xlab="modèle du véhicule")
+plot(modelb, i.var = 9,type="response",xlab="plus ou moins value kilométrique")
+```
+
+Malgré une bonne segmentation, dans 99% des cas on ne parvient pas dépasser 40% de probabilité d'écart BT-VRADE<500€.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+plot(quantile(predict(object=modelb,newdata = dbBT,type = "response"),1:100/100),type="l",ylab="freq prédite d'écarts <500€",main="risque prédit d'écart\nBT vs VRADE <500€")
+dbBT$diffkm2x=ifelse(abs(dbBT$km/dbBT$refkm-1)>1,0,1)
+```
+
+Retour sur les valeurs réelles : dans ce même échantillon, combien de véhicules par modèle avec un écart entre réference kilométrique et distance réelle parcourue inférieur/supérieur à 100%.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+spreadVeh=dbBT[,list("pred"=mean(target),"nb"=sum(length(target))),by=c("NOM_COM","diffkm2x")]
+plot(spreadVeh$nb)
+```
+
+On compte le nombre de BT proches de VRADE (écart<500€) pour chaque modèle de véhicule selon l'écart entre référence kilométrique et distance réelle parcourue.
+
+On ne dépasse jamais les 25% de cas proches à 500€ prêt pour un modèle donné représenté au moins 100 fois dans l'historique des réparations sur 2 ans.
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+plot(sort(subset(spreadVeh,spreadVeh$nb>100)$pred),ylab="freq écart <500€",main="répartition des fréquences d'erreur <500€ \npour des modèles comptés plus de 100 fois",type="l")
+```
+
+Essayons de faire de même pour la valeur modélisée.
+
+On part d'une meilleure performance puisque dans 32% des cas l'écart entre VRADE et valeur prédite est inférieur à 500€.
+
+Le principal facteur de discrimination est le modèle du véhicule. Ceci n'est pas surprenant d'autant que le nombre de modalités permet un affinage important suivant cette variable.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+seuil=500 #Autant compter en euros pour mieux comprendre combien on s'écarte
+db2$target=ifelse(abs(db2$VRADE-db2$pred)>seuil,0,1)
+db2$NOM_COM=as.factor(db2$NOM_COM)
+db2$ratiokm=abs(db2$km/db2$refkm-1)
+db2$diffkm=abs(db2$km-db2$refkm)
+summary(db2$target)
+param=c(ntree=150,depth=10,shrinkage=0.01,train.fraction=0.8)
+modelb=gbm(target~km+mois+diffkm+ratiokm+NOM_COM+PUIS_REE+PRIXACT+iiactu+coeff+pmvkm+VIT_MAXI+CYLINDRE+ENERGIE+GENRE+EMISSION_CO2+BOIT_VIT+FREIN+CTRL_DYN_STAB+SERILIM+NBRE_PTE+DIR_ASS+VIT_MAXI+ctte+CARROSS+TRANS+COUPLE_MOT_MAX+CYLINDRE+table,data=db2,distribution = "bernoulli",n.trees = param[1],interaction.depth = param[2], shrinkage = param[3],train.fraction = param[4],n.minobsinnode = 100,verbose = T)
+summary(modelb,cBars=4)
+```
+
+De façon assez intuitive l'effet c.p. du kilométrage sur la fréquence prédite d'écarts <500€ croissant jusqu'à un niveau standard (200 000 km) et décroissant au délà.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+predb2T=predict(object=modelb,newdata = db2,type = "response")
+plot(modelb, i.var = 1,type="response",xlab = "kilométrage")
+```
+
+L'effet "modèle du véhicule" est remarquable, ceci dit le risque de sur-apprentissage est très important, certains modèles peuvent être présents une seule fois d'où un overfitting immédiat et une prédiction à 0 ou 1.
+
+C'est ce qu'illustre le second graphe. Dans 99% la probabilité prédite d'un écart <500€ ne dépasse pas 50%.
+
+Aucun groupe n'apparaît comme ayant majoritement des écarts modélisation-VRADE inférieurs à 500€.
+
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+plot(modelb, i.var = 5,type="response",xlab="modèle du véhicule")
+plot(quantile(predict(object=modelb,newdata = db2,type = "response"),1:100/100),type="l",ylab="freq prédite d'écarts <500€",main="répartition prédite d'erreurs\nmodélisation vs VRADE <500€")
+db2$diffkm2x=ifelse(abs(db2$km/db2$refkm-1)>1,0,1)
+spreadVeh=db2[,list("pred"=mean(target),"nb"=sum(length(target))),by=c("NOM_COM","diffkm2x")]
+```
+
+Tout comme pour les BT, on propose, pour les modèles de véhicules présents plus de 100 fois dans l'historique des réparations, de calculer (probabilité réelle) la fréquence d'écarts inférieurs à 500€.
+
+On fait deux fois mieux qu'avec le bilan technique mais ça reste largement insuffisant.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+plot(sort(subset(spreadVeh,spreadVeh$nb>100)$pred),ylab="freq écart <500€",main="répartition des fréquences d'erreur <500€ \npour des modèles comptés plus de 100 fois",type="l")
+```
+
+Dans la compréhension des erreurs du modèle on décide de mesurer la variabilité de la VRADE pour chaque modèle présent plus de 20 fois (sinon difficile d'estimer).
+
+Les écart-types relatifs valent entre 32% et 114%, ce qui est énorme.
+
+Cette dispersion s'explique par les différences de valeur importantes entre deux modèles selon la finition.
+
+Un exemple assez frappant est celui du Renault Espace IV. On compte 119 cas de VEI pour ce modèle en 24 mois. La VRADE moyenne associée est 4100€ et l'écart type vaut 3800€.
+
+```{r, echo=FALSE, cache=FALSE, results=T, warning=FALSE,  include=TRUE}
+varVRADE=db2[,list("mean"=mean(VRADE),"var"=sd(VRADE),"nb"=sum(length(VRADE)),"age"=mean(mois),"vage"=sd(mois),"km"=mean(km),"vkm"=sd(km)),by=c("NOM_COM","MARQUE")]
+sub=subset(varVRADE,varVRADE$nb>20)
+sub=sub[order(sub$var/sub$mean),]
+plot(sort(sub$var/sub$mean),ylab="écart type VRADE",main="Répartition des écart-types sur la VRADE",type="l")
+View(sub)
+```
